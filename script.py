@@ -44,6 +44,24 @@ sudo mysql -e "DROP USER ''@'$(hostname)'"
 sudo mysql -e "DROP DATABASE test"
 sudo mysql -e "FLUSH PRIVILEGES"
 
+# downloading sakila
+mkdir tmp
+cd tmp
+sudo wget http://downloads.mysql.com/docs/sakila-db.zip
+unzip sakila-db.zip
+cd ..
+
+# setting up sakila db
+sudo mysql -u root -p"mypassword" <<EOF
+SOURCE tmp/sakila-db/sakila-schema.sql;
+SOURCE tmp/sakila-db/sakila-data.sql;
+USE sakila;
+exit
+EOF
+
+sudo sysbench oltp_read_write --table-size=1000000 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword prepare
+sudo sysbench oltp_read_write --table-size=1000000 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword run
+
 """
 
 
