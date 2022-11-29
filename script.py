@@ -64,6 +64,81 @@ sudo sysbench oltp_read_write --table-size=1000000 --mysql-db=sakila --mysql-use
 
 """
 
+userdata_nodes="""#!/bin/bash
+
+sudo apt update
+sudo apt install wget
+sudo service mysqld stop
+yes | sudo apt install yum
+sudo yum remove mysql-server mysql mysql-devel
+
+mkdir -p /opt/mysqlcluster/home
+cd /opt/mysqlcluster/home
+wget http://dev.mysql.com/get/Downloads/MySQL-Cluster-7.2/mysql-cluster-gpl-7.2.1-linux2.6-x86_64.tar.gz
+sudo tar -xf mysql-cluster-gpl-7.2.1-linux2.6-x86_64.tar.gz
+sudo ln -s mysql-cluster-gpl-7.2.1-linux2.6-x86_64 mysqlc
+
+echo 'export MYSQLC_HOME=/opt/mysqlcluster/home/mysqlc' > /etc/profile.d/mysqlc.sh
+echo 'export PATH=$MYSQLC_HOME/bin:$PATH' >> /etc/profile.d/mysqlc.sh
+
+sudo mkdir -p /opt/mysqlcluster/deploy/ndb_data
+
+"""
+
+userdata_masternode="""#!/bin/bash
+
+sudo apt update
+sudo apt install wget
+sudo service mysqld stop
+yes | sudo apt install yum
+sudo yum remove mysql-server mysql mysql-devel
+
+mkdir -p /opt/mysqlcluster/home
+cd /opt/mysqlcluster/home
+wget http://dev.mysql.com/get/Downloads/MySQL-Cluster-7.2/mysql-cluster-gpl-7.2.1-linux2.6-x86_64.tar.gz
+sudo tar -xf mysql-cluster-gpl-7.2.1-linux2.6-x86_64.tar.gz
+sudo ln -s mysql-cluster-gpl-7.2.1-linux2.6-x86_64 mysqlc
+sudo chmod -R 777 mysqlc
+
+echo 'export MYSQLC_HOME=/opt/mysqlcluster/home/mysqlc' > /etc/profile.d/mysqlc.sh
+echo 'export PATH=$MYSQLC_HOME/bin:$PATH' >> /etc/profile.d/mysqlc.sh
+
+sudo mkdir -p /opt/mysqlcluster/deploy
+cd /opt/mysqlcluster/deploy
+sudo mkdir conf
+sudo mkdir mysqld_data
+sudo mkdir ndb_data
+
+sudo chmod 777 /opt/mysqlcluster/deploy/conf
+cd conf
+echo -n > my.cnf
+sudo chmod 664 my.cnf
+sudo cat <<EOF >my.cnf
+[mysqld]
+ndbcluster
+datadir=/opt/mysqlcluster/deploy/mysqld_data
+basedir=/opt/mysqlcluster/home/mysqlc
+port=3306
+EOF
+
+cd /opt/mysqlcluster/deploy
+sudo chmod -R 777 mysqld_data
+sudo chmod -R 777 ndb_data
+
+# downloading sakila
+sudo apt install unzip
+cd ~
+mkdir tmp
+cd tmp
+sudo wget http://downloads.mysql.com/docs/sakila-db.zip
+unzip sakila-db.zip
+cd ..
+
+# sysbench installation
+yes | sudo apt-get install sysbench
+
+"""
+
 
 def createSecurityGroup(ec2_client):
     """
@@ -232,18 +307,63 @@ def createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata
     instances_t2_a[0].reload()
 
     ip = instances_t2_a[0].public_ip_address
+    privateip = instances_t2_a[0].private_ip_address
     print(ip)
+    print(privateip)
 
     # Wait for all instances to be active!
     instance_running_waiter = ec2_client.get_waiter('instance_running')
     instance_running_waiter.wait(InstanceIds=(instance_ids))
 
-    return [instance_ids, ip]
+    return [instance_ids, ip, privateip]
 
+def getParamikoClient():
+    """
+        Retrievs the users PEM file and creates a paramiko client required to ssh into the instances
+        Returns
+        -------
+        client
+            the paramiko client
+        str
+            the access key from the PEM file
+        """
+    path = str(get_project_root()).replace('\\', '/')
+    print("path", path)
+    accesKey = paramiko.RSAKey.from_private_key_file(path + "/labsuser.pem")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    return client, accesKey
+
+def send_command(client, command):
+    """
+        function that sends command to an instance using paramiko
+        print possible errors and return values
+        Parameters
+        ----------
+        client : client
+            the paramiko client required to connect to the intance usin ssh
+        command : str
+            The desired commands are sent to the instance
+        Returns
+        -------
+        str
+            returns the return value of commands
+        """
+    try:
+        stdin, stdout, stderr = client.exec_command(command)
+        # the read() function reads the output in bit form
+        print("stderr.read():", stderr.read())
+        # converts the bit string to str
+        output = stdout.read().decode('ascii').split("\n")
+        print("output", output)
+        return output
+    except:
+        print("error occured in sending command")
 
 def main():
     """
-        main function fer performing the application
+        main function for performing the application
 
         Conncets to the boto3 clients
         calls the required functions
@@ -252,6 +372,9 @@ def main():
     """------------Get necesarry clients from boto3------------------------"""
     ec2_client = boto3.client("ec2")
     ec2 = boto3.resource('ec2')
+
+    """------------Create Paramiko Client------------------------------"""
+    paramiko_client, accesKey = getParamikoClient()
 
     """-------------------Create security group--------------------------"""
     SECURITY_GROUP, vpc_id = createSecurityGroup(ec2_client)
@@ -267,5 +390,20 @@ def main():
     ins_standalone = createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata_standalone)
     print("Instance ids: \n", str(ins_standalone[0]), "\n")
     print("Instance ip: \n", str(ins_standalone[1]), "\n")
+
+    """-------------------Create the cluster instances--------------------------"""
+    ins_cluster1 = createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata_masternode)
+    print("Instance ids: \n", str(ins_cluster1), "\n")
+    print("Instance ip - master: \n", str(ins_cluster1), "\n")
+    ins_cluster2 = createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata_nodes)
+    print("Instance ids: \n", str(ins_cluster2), "\n")
+    print("Instance ip - node1: \n", str(ins_cluster2), "\n")
+    ins_cluster3 = createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata_nodes)
+    print("Instance ids: \n", str(ins_cluster3), "\n")
+    print("Instance ip - node2: \n", str(ins_cluster3), "\n")
+    ins_cluster4 = createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata_nodes)
+    print("Instance ids: \n", str(ins_cluster4), "\n")
+    print("Instance ip - node3: \n", str(ins_cluster4), "\n")
+
 
 main()
