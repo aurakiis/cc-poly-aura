@@ -125,18 +125,6 @@ cd /opt/mysqlcluster/deploy
 sudo chmod -R 777 mysqld_data
 sudo chmod -R 777 ndb_data
 
-# downloading sakila
-sudo apt install unzip
-cd ~
-mkdir tmp
-cd tmp
-sudo wget http://downloads.mysql.com/docs/sakila-db.zip
-unzip sakila-db.zip
-cd ..
-
-# sysbench installation
-yes | sudo apt-get install sysbench
-
 """
 
 
@@ -194,6 +182,12 @@ def createSecurityGroup(ec2_client):
             'FromPort': 80,
             'ToPort': 80,
             'IpProtocol': 'tcp',
+            'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+        },
+        {
+            'FromPort': 0,
+            'ToPort': 65535,
+            'IpProtocol': '-1',
             'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
         }]
     )
@@ -361,6 +355,245 @@ def send_command(client, command):
     except:
         print("error occured in sending command")
 
+def createConfigSetupFile(ip, client, accesKey, privateipMaster, privateip1, privateip2, privateip3):
+    """
+        Creating setup files on master so that the files can be executed. These files are:
+        1) installation of libncurses5 and creation fo config.ini file
+        2) MySQL setup file
+        3) MySQL setup after node connections and MySQL execution
+        4) Sysbench preparation and run
+        Also changing access rights of the newly created files to include rwx.
+        ----------
+        ip : str
+            ip adress of the instance we wish to connect to
+        client : client
+            paramiko client to ssh into instance
+        accesKey : str
+            private accesskey to gain access to instance
+        privateipMaster : str
+            private ip adress of the master instance needed for the config.ini
+        privateip1 : str
+            private ip adress of the first instance needed for the config.ini
+        privateip2 : str
+            private ip adress of the second instance needed for the config.ini
+        privateip3 : str
+            private ip adress of the third instance needed for the config.ini
+    """
+
+    try:
+        client.connect(hostname=ip, username="ubuntu", pkey=accesKey)
+    except:
+        print("could not connect to client")
+
+    # writing the config.ini file and installing libncurses5
+    file_path = "write_config.sh"
+    file_path2 = "mysql_setup.sh"
+    file_path3 = "mysql_execution.sh"
+    file_path4 = "mysql_execution2.sh"
+    file_path5 = "sysbench.sh"
+
+    file_content = """#!/bin/bash
+        source /etc/profile.d/mysqlc.sh
+        sudo apt -y install libncurses5
+        cd /opt/mysqlcluster/deploy/conf/
+
+        sudo cat <<EOF >config.ini
+        [ndb_mgmd]
+        hostname=""" + privateipMaster + """
+        datadir=/opt/mysqlcluster/deploy/ndb_data
+        nodeid=1
+
+        [ndbd default]
+        noofreplicas=1
+        datadir=/opt/mysqlcluster/deploy/ndb_data
+
+        [ndbd]
+        hostname=""" + privateip1 + """
+        nodeid=2
+
+        [ndbd]
+        hostname=""" + privateip2 + """
+        nodeid=3
+
+        [ndbd]
+        hostname=""" + privateip3 + """
+        nodeid=4
+
+        [mysqld]
+        nodeid=50
+        """
+
+    # writing the mysql setup file
+    file_content2 = """#!/bin/bash
+        cd /opt/mysqlcluster/deploy
+        sudo chmod -R 777 mysqld_data
+        sudo chmod -R 777 ndb_data
+        cd /opt/mysqlcluster/home
+        sudo chmod -R 777 mysqlc
+
+        cd /opt/mysqlcluster/home/mysqlc
+        sudo scripts/mysql_install_db --no-defaults --datadir=/opt/mysqlcluster/deploy/mysqld_data
+        sudo /opt/mysqlcluster/home/mysqlc/bin/ndb_mgmd -f /opt/mysqlcluster/deploy/conf/config.ini --initial --configdir=/opt/mysqlcluster/deploy/conf/
+        ndb_mgm -e show
+        ndb_mgm -e 'all status'
+    """
+
+    # writing the setup file for the mysql execution
+    file_content3 = """#!/bin/bash
+        # Check statuses
+        ndb_mgm -e show
+        ndb_mgm -e 'all status'
+
+        # After all nodes have started
+        cd /opt/mysqlcluster/deploy
+        sudo chmod -R 777 mysqld_data
+        sudo chmod -R 777 ndb_data
+        cd /opt/mysqlcluster/home
+        sudo chmod -R 777 mysqlc
+
+        mysqld --defaults-file=/opt/mysqlcluster/deploy/conf/my.cnf --user=root &
+    """
+    # writing the setup file for the sakila and mysql_secure_installation
+    file_content4 = """
+        # running mysql_secure_installation commands
+        mysql -uroot -e "UPDATE mysql.user SET Password = PASSWORD('mypassword') WHERE User = 'root'"
+        mysql -uroot -e "DROP USER ''@'localhost'"
+        mysql -uroot -e "DROP USER ''@'$(hostname)'"
+        mysql -uroot -e "DROP DATABASE test"
+        mysql -uroot -e "FLUSH PRIVILEGES"
+
+        # downloading sakila
+        sudo apt install unzip
+        cd ~
+        mkdir tmp
+        cd tmp
+        sudo wget http://downloads.mysql.com/docs/sakila-db.zip
+        unzip sakila-db.zip
+        cd ..
+
+        # setting up sakila db
+        mysql -u root -p"mypassword" <<EOF
+        SOURCE tmp/sakila-db/sakila-schema.sql;
+        SOURCE tmp/sakila-db/sakila-data.sql;
+        USE sakila;
+        exit
+    """
+    # writing the sysbench file
+    file_content5 = """#!/bin/bash
+        # sysbench installation
+        yes | sudo apt-get install sysbench
+        # sysbench
+        sysbench oltp_read_write --table-size=1000000 --mysql-host=127.0.0.1 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword prepare
+        sysbench oltp_read_write --table-size=1000000 --mysql-host=127.0.0.1 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword run > results.txt
+    """
+
+    command = f"""
+        cat << EOF > {file_path}
+        {file_content}
+    """
+    command2 = f"""
+        cat << EOF > {file_path2}
+        {file_content2}
+    """
+    command3 = f"""
+        cat << EOF > {file_path3}
+        {file_content3}
+    """
+    command4 = f"""
+        cat << EOF > {file_path4}
+        {file_content4}
+    """
+    command5 = f"""
+        cat << EOF > {file_path5}
+        {file_content5}
+    """
+
+    accessRightChanges = """#!/bin/bash
+        sudo chmod 777 write_config.sh\n
+        sudo chmod 777 mysql_setup.sh\n
+        sudo chmod 777 mysql_execution.sh\n
+        sudo chmod 777 mysql_execution2.sh\n
+        sudo chmod 777 sysbench.sh
+    """
+
+    configFile = send_command(client, command)
+    mysqlFile = send_command(client, command2)
+    mysqlExecutionFile = send_command(client, command3)
+    sysbenchSetup = send_command(client, command4)
+    mysqlExecutionFile2 = send_command(client, command5)
+    accessRights = send_command(client, accessRightChanges)
+
+    client.close()
+
+def createNodeFile(ip, client, accesKey, privateipMaster):
+    """
+        Creating a file on the slave node that contains all the required commands to connect the slave to the master.
+        ----------
+        ip : str
+            ip adress of the instance we wish to connect to
+        client : client
+            paramiko client to ssh into instance
+        accesKey : str
+            private accesskey to gain access to instance
+        privateipMaster : str
+            private ip adress of the master instance needed for the connection
+    """
+
+    try:
+        client.connect(hostname=ip, username="ubuntu", pkey=accesKey)
+    except:
+        print("could not connect to client")
+
+    file_path = "connection.sh"
+
+    print("""sudo /opt/mysqlcluster/home/mysqlc/bin/ndbd -c \"""" + str(privateipMaster) + """:1186\" """)
+
+    file_content = """#!/bin/bash
+    source /etc/profile.d/mysqlc.sh
+    sudo apt -y install libncurses5
+    cd /opt
+    sudo chmod -R 777 /opt
+    sudo /opt/mysqlcluster/home/mysqlc/bin/ndbd -c \"""" + str(privateipMaster) + """:1186\" """
+
+    command = f"""
+        cat << EOF > {file_path}
+        {file_content}
+    """
+
+    accessRightChanges = """#!/bin/bash
+        sudo chmod 777 connection.sh\n
+    """
+
+    connectionSetup = send_command(client, command)
+    accessRights = send_command(client, accessRightChanges)
+
+    client.close()
+
+def executeFiles(ip, client, accesKey, filename):
+    """
+        Executing files on the instances to setup the cluster and run sysbench.
+        ----------
+        ip : str
+            ip adress of the instance we wish to connect to
+        client : client
+            paramiko client to ssh into instance
+        accesKey : str
+            private accesskey to gain access to instance
+        filename : str
+            name of the file which is executed on an instance
+    """
+
+    try:
+        client.connect(hostname=ip, username="ubuntu", pkey=accesKey)
+    except:
+        print("could not connect to client")
+
+    command = """/bin/bash """ + filename
+
+    configSetup = send_command(client, command)
+
+    client.close()
+
 def main():
     """
         main function for performing the application
@@ -405,5 +638,26 @@ def main():
     print("Instance ids: \n", str(ins_cluster4), "\n")
     print("Instance ip - node3: \n", str(ins_cluster4), "\n")
 
+    """-------------------Create setup files and execute them--------------------------"""
+
+    print("-------------------Wait installation 4 min-------------------")
+    time.sleep(240)
+    print("-------------------Setup file creation-------------------")
+    createConfigSetupFile(ins_cluster1[1], paramiko_client, accesKey, str(ins_cluster1[2]), str(ins_cluster2[2]), str(ins_cluster3[2]), str(ins_cluster4[2]))
+    createNodeFile(ins_cluster2[1], paramiko_client, accesKey, str(ins_cluster1[2]))
+    createNodeFile(ins_cluster3[1], paramiko_client, accesKey, str(ins_cluster1[2]))
+    createNodeFile(ins_cluster4[1], paramiko_client, accesKey, str(ins_cluster1[2]))
+    print("-------------------files created - execute master setup-------------------")
+    executeFiles(ins_cluster1[1], paramiko_client, accesKey, "write_config.sh")
+    executeFiles(ins_cluster1[1], paramiko_client, accesKey, "mysql_setup.sh")
+    print("-------------------node connections-------------------")
+    executeFiles(ins_cluster2[1], paramiko_client, accesKey, "connection.sh")
+    executeFiles(ins_cluster3[1], paramiko_client, accesKey, "connection.sh")
+    executeFiles(ins_cluster4[1], paramiko_client, accesKey, "connection.sh")
+    print("-------------------Connect to the cluster " + ins_cluster1[1] + " and run commands on mysql connection, sakila and sysbench manually-------------------")
+    print("/bin/bash mysql_execution.sh")
+    print("/bin/bash mysql_execution2.sh")
+    print("/bin/bash sysbench.sh")
+    print("cat results.txt")
 
 main()
