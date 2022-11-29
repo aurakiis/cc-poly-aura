@@ -60,7 +60,7 @@ exit
 EOF
 
 sudo sysbench oltp_read_write --table-size=1000000 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword prepare
-sudo sysbench oltp_read_write --table-size=1000000 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword run
+sudo sysbench oltp_read_write --table-size=1000000 --mysql-db=sakila --mysql-user=root --mysql-password=mypassword run > results.txt
 
 """
 
