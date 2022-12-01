@@ -1,15 +1,12 @@
 # Keys are defined in configuration file
 # MAKE SURE YOU UPDATED YOUR .AWS/credentials file
-# MAKE SURE boto3 and matplotlib are all installed using pip
+# MAKE SURE boto3 and paramiko are installed using pip
 import boto3
 import time
 from datetime import date
 from datetime import datetime, timedelta
 
 import paramiko
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-# import webbrowser
 
 # allows us to geth the path for the pem file
 from pathlib import Path
@@ -21,12 +18,10 @@ def get_project_root() -> Path:
     """
     return Path(__file__).parent
 
-# This makes the plots made by the script open in a webbrowser
-# mpl.use('WebAgg')
-
 """
 The user data constants are used to setup and download programs on the instances
 They are passed as arguments in the create instance step
+There are different user data variables for stand-alone and cluster, including data nodes and management node
 """
 
 userdata_standalone="""#!/bin/bash
@@ -172,18 +167,7 @@ def createSecurityGroup(ec2_client):
     rule_creation = ec2_client.authorize_security_group_ingress(
         GroupName="Cloud Computing Project",
         GroupId=group_id,
-        IpPermissions=[{
-            'FromPort': 22,
-            'ToPort': 22,
-            'IpProtocol': 'tcp',
-            'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
-        },
-        {
-            'FromPort': 80,
-            'ToPort': 80,
-            'IpProtocol': 'tcp',
-            'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
-        },
+        IpPermissions=[
         {
             'FromPort': 0,
             'ToPort': 65535,
@@ -285,7 +269,7 @@ def createInstances(ec2_client, ec2, SECURITY_GROUP, availabilityZones, userdata
         Returns
         -------
         array
-            containg instance id and ip
+            containg instance id, puublic ip and private ip
         """
     # Get wanted availability zone
     availability_zone_1a = availabilityZones.get('us-east-1a')
@@ -355,12 +339,12 @@ def send_command(client, command):
     except:
         print("error occured in sending command")
 
-def createConfigSetupFile(ip, client, accesKey, privateipMaster, privateip1, privateip2, privateip3):
+def createMasterFiles(ip, client, accesKey, privateipMaster, privateip1, privateip2, privateip3):
     """
         Creating setup files on master so that the files can be executed. These files are:
-        1) installation of libncurses5 and creation fo config.ini file
+        1) installation of libncurses5 and creation of config.ini file
         2) MySQL setup file
-        3) MySQL setup after node connections and MySQL execution
+        3) MySQL server setup after node connections, MySQL secure installation and sakila
         4) Sysbench preparation and run
         Also changing access rights of the newly created files to include rwx.
         ----------
@@ -527,7 +511,8 @@ def createConfigSetupFile(ip, client, accesKey, privateipMaster, privateip1, pri
 
 def createNodeFile(ip, client, accesKey, privateipMaster):
     """
-        Creating a file on the slave node that contains all the required commands to connect the slave to the master.
+        Creating a file on each data node that contains all the required commands to start the data nodes
+        Also changing access rights to rwx of the created file
         ----------
         ip : str
             ip adress of the instance we wish to connect to
@@ -545,8 +530,6 @@ def createNodeFile(ip, client, accesKey, privateipMaster):
         print("could not connect to client")
 
     file_path = "connection.sh"
-
-    print("""sudo /opt/mysqlcluster/home/mysqlc/bin/ndbd -c \"""" + str(privateipMaster) + """:1186\" """)
 
     file_content = """#!/bin/bash
     source /etc/profile.d/mysqlc.sh
@@ -571,7 +554,7 @@ def createNodeFile(ip, client, accesKey, privateipMaster):
 
 def executeFiles(ip, client, accesKey, filename):
     """
-        Executing files on the instances to setup the cluster and run sysbench.
+        Function to execute files on the instances to setup the cluster
         ----------
         ip : str
             ip adress of the instance we wish to connect to
@@ -601,7 +584,7 @@ def main():
         Conncets to the boto3 clients
         calls the required functions
 
-        """
+    """
     """------------Get necesarry clients from boto3------------------------"""
     ec2_client = boto3.client("ec2")
     ec2 = boto3.resource('ec2')
@@ -643,7 +626,7 @@ def main():
     print("-------------------Wait installation 4 min-------------------")
     time.sleep(240)
     print("-------------------Setup file creation-------------------")
-    createConfigSetupFile(ins_cluster1[1], paramiko_client, accesKey, str(ins_cluster1[2]), str(ins_cluster2[2]), str(ins_cluster3[2]), str(ins_cluster4[2]))
+    createMasterFiles(ins_cluster1[1], paramiko_client, accesKey, str(ins_cluster1[2]), str(ins_cluster2[2]), str(ins_cluster3[2]), str(ins_cluster4[2]))
     createNodeFile(ins_cluster2[1], paramiko_client, accesKey, str(ins_cluster1[2]))
     createNodeFile(ins_cluster3[1], paramiko_client, accesKey, str(ins_cluster1[2]))
     createNodeFile(ins_cluster4[1], paramiko_client, accesKey, str(ins_cluster1[2]))
@@ -658,6 +641,8 @@ def main():
     print("/bin/bash mysql_execution.sh")
     print("/bin/bash mysql_execution2.sh")
     print("/bin/bash sysbench.sh")
+    print("cat results.txt")
+    print("-------------------Connect to the stand-alone  " + ins_standalone[1] + " and run command to get the results-------------------")
     print("cat results.txt")
 
 main()
