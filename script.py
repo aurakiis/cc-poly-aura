@@ -341,11 +341,13 @@ def send_command(client, command):
 
 def createMasterFiles(ip, client, accesKey, privateipMaster, privateip1, privateip2, privateip3):
     """
+
         Creating setup files on master so that the files can be executed. These files are:
         1) installation of libncurses5 and creation of config.ini file
         2) MySQL setup file
-        3) MySQL server setup after node connections, MySQL secure installation and sakila
-        4) Sysbench preparation and run
+        3) MySQL server setup after node connections
+        4) MySQL secure installation and sakila
+        5) Sysbench preparation and run
         Also changing access rights of the newly created files to include rwx.
         ----------
         ip : str
@@ -422,7 +424,7 @@ def createMasterFiles(ip, client, accesKey, privateipMaster, privateip1, private
         ndb_mgm -e 'all status'
     """
 
-    # writing the setup file for the mysql execution
+    # writing the setup file for the mysql server start
     file_content3 = """#!/bin/bash
         # Check statuses
         ndb_mgm -e show
